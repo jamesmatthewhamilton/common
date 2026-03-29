@@ -26,7 +26,7 @@ class OllamaProvider(BaseProvider):
 
     def _setup_tunnel(self):
         """Establish SSH tunnel to remote Ollama server."""
-        from ...ssh import open_tunnel
+        from ..ssh import open_tunnel
 
         tc = self._tunnel_config
         required = ["user", "host", "remote_host", "remote_port"]
@@ -50,7 +50,7 @@ class OllamaProvider(BaseProvider):
     def close(self):
         """Close the SSH tunnel if one was opened."""
         if self._tunnel_port:
-            from ...ssh import close_tunnel
+            from ..ssh import close_tunnel
             close_tunnel(self._tunnel_port)
             self._tunnel_port = None
 

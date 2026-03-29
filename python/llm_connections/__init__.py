@@ -1,6 +1,6 @@
 """Shared LLM client library — config-driven, multi-provider."""
 
-from .client import LLMClient
+from .client import LLMConnection
 from .response import LLMResponse, LLMChunk
 
-__all__ = ["LLMClient", "LLMResponse", "LLMChunk"]
+__all__ = ["LLMConnection", "LLMResponse", "LLMChunk"]

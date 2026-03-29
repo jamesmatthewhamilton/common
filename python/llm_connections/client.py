@@ -1,4 +1,4 @@
-"""LLMClient — config-driven, multi-provider LLM client."""
+"""LLMConnection — config-driven, multi-provider LLM client."""
 
 import os
 
@@ -7,15 +7,15 @@ from .llm_providers import get_provider_class
 from .response import LLMResponse
 
 
-class LLMClient:
+class LLMConnection:
     """A configured LLM client backed by a specific provider.
 
     Usage:
         # Load providers from a YAML file (only reads "providers:" key)
-        LLMClient.load("config/default.yaml")
+        LLMConnection.load("config/default.yaml")
 
         # Get a named client
-        client = LLMClient.get("local-big")
+        client = LLMConnection.get("local-big")
 
         # Chat
         response = client.chat(messages)
@@ -52,13 +52,13 @@ class LLMClient:
             cls._registry[name] = cls(provider_instance)
 
     @classmethod
-    def get(cls, name: str) -> "LLMClient":
+    def get(cls, name: str) -> "LLMConnection":
         """Get a named client from the registry."""
         if name not in cls._registry:
             available = ", ".join(cls._registry.keys()) or "(none loaded)"
             raise KeyError(
                 f"Provider '{name}' not found. Available: {available}. "
-                f"Call LLMClient.load('config.yaml') first."
+                f"Call LLMConnection.load('config.yaml') first."
             )
         return cls._registry[name]
 
@@ -99,4 +99,4 @@ class LLMClient:
         return self._provider.model
 
     def __repr__(self):
-        return f"LLMClient(provider={self._provider.__class__.__name__}, model={self.model})"
+        return f"LLMConnection(provider={self._provider.__class__.__name__}, model={self.model})"
