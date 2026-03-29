@@ -7,6 +7,20 @@ from .llm_providers import get_provider_class
 from .response import LLMResponse
 
 
+class _FailedConnection:
+    """Placeholder for a provider that failed to connect at load time."""
+    def __init__(self, name, error):
+        self.name = name
+        self.error = error
+        self.model = f"(failed: {name})"
+    def chat(self, *args, **kwargs):
+        raise ConnectionError(
+            f"Provider '{self.name}' is not available: {self.error}"
+        )
+    def __repr__(self):
+        return f"FailedConnection({self.name}: {self.error})"
+
+
 DEFAULT_CONFIG_DIR = os.path.expanduser("~/.llm-connections")
 DEFAULT_CONFIG_PATH = os.path.join(DEFAULT_CONFIG_DIR, "config.yaml")
 
@@ -83,8 +97,13 @@ class LLMConnection:
                 raise ValueError(f"Provider '{name}' missing 'provider' key in config")
 
             provider_cls = get_provider_class(provider_type)
-            provider_instance = provider_cls(config)
-            cls._registry[name] = cls(provider_instance)
+            try:
+                provider_instance = provider_cls(config)
+                cls._registry[name] = cls(provider_instance)
+            except ConnectionError as e:
+                import logging
+                logging.warning(f"Provider '{name}' failed to connect: {e}")
+                cls._registry[name] = _FailedConnection(name, str(e))
 
     @classmethod
     def get(cls, name: str) -> "LLMConnection":
