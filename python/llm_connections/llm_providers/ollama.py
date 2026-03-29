@@ -96,6 +96,15 @@ class OllamaProvider(BaseProvider):
                 else:
                     return self._sync_chat(client, kwargs)
             except Exception as e:
+                err_str = str(e)
+                # Malformed tool call JSON from model — not retryable, return as text
+                if "error parsing tool call" in err_str:
+                    logger.warning(f"Model produced malformed tool call: {err_str}")
+                    return LLMResponse(
+                        text=f"[Tool call error: model produced invalid JSON. Try again.]",
+                        model=model,
+                        done_reason="error",
+                    )
                 last_error = e
                 if attempt < self.MAX_RETRIES - 1:
                     wait = 2 ** attempt
