@@ -1,9 +1,11 @@
-"""YAML config loader. Only reads the 'providers:' key, ignores everything else."""
+"""YAML config loader. Only reads the 'llm-providers:' key, ignores everything else."""
 
 import os
 import re
 
 import yaml
+
+YAML_KEY = "llm-providers"
 
 
 def _expand_env_vars(value):
@@ -21,9 +23,9 @@ def _expand_env_vars(value):
 
 
 def load_providers(yaml_path: str) -> dict:
-    """Load providers from a YAML file.
+    """Load LLM providers from a YAML file.
 
-    Only reads the 'providers:' key. All other keys are ignored.
+    Only reads the 'llm-providers:' key. All other keys are ignored.
     Expands ${ENV_VAR} references in string values.
 
     Returns:
@@ -36,8 +38,8 @@ def load_providers(yaml_path: str) -> dict:
     with open(yaml_path, "r") as f:
         raw = yaml.safe_load(f) or {}
 
-    providers = raw.get("providers", {})
+    providers = raw.get(YAML_KEY, {})
     if not providers:
-        raise ValueError(f"No 'providers:' key found in {yaml_path}")
+        raise ValueError(f"No '{YAML_KEY}:' key found in {yaml_path}")
 
     return _expand_env_vars(providers)

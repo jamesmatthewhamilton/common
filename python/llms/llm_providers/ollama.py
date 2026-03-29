@@ -1,4 +1,4 @@
-"""Ollama provider — local LLM inference via Ollama."""
+"""Ollama provider — local or remote LLM inference via Ollama."""
 
 import logging
 import time
@@ -10,13 +10,49 @@ logger = logging.getLogger(__name__)
 
 
 class OllamaProvider(BaseProvider):
-    """Provider for Ollama (local LLM server)."""
+    """Provider for Ollama (local or remote via SSH tunnel)."""
 
     MAX_RETRIES = 3
 
     def __init__(self, config: dict):
         super().__init__(config)
-        self.base_url = config.get("base_url", "http://localhost:11434")
+        self._tunnel_port = None
+        self._tunnel_config = config.get("ssh_tunnel")
+
+        if self._tunnel_config:
+            self._setup_tunnel()
+        else:
+            self.base_url = config.get("base_url", "http://localhost:11434")
+
+    def _setup_tunnel(self):
+        """Establish SSH tunnel to remote Ollama server."""
+        from ...ssh import open_tunnel
+
+        tc = self._tunnel_config
+        required = ["user", "host", "remote_host", "remote_port"]
+        missing = [k for k in required if k not in tc]
+        if missing:
+            raise ValueError(f"ssh_tunnel config missing: {', '.join(missing)}")
+
+        self._tunnel_port = open_tunnel(
+            ssh_user=tc["user"],
+            ssh_host=tc["host"],
+            remote_host=tc["remote_host"],
+            remote_port=tc["remote_port"],
+            local_port=tc.get("local_port", 0),
+            ssh_password=tc.get("password"),
+            verify_url="/api/tags",
+            verify_timeout=tc.get("verify_timeout", 15),
+        )
+        self.base_url = f"http://localhost:{self._tunnel_port}"
+        logger.info(f"Ollama tunneled to {self.base_url}")
+
+    def close(self):
+        """Close the SSH tunnel if one was opened."""
+        if self._tunnel_port:
+            from ...ssh import close_tunnel
+            close_tunnel(self._tunnel_port)
+            self._tunnel_port = None
 
     def chat(self, messages: list, tools: list = None,
              stream: bool = False, **overrides) -> LLMResponse:

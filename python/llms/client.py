@@ -3,7 +3,7 @@
 import os
 
 from .config import load_providers
-from .providers import get_provider_class
+from .llm_providers import get_provider_class
 from .response import LLMResponse
 
 
