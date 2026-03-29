@@ -7,11 +7,31 @@ from .llm_providers import get_provider_class
 from .response import LLMResponse
 
 
+DEFAULT_CONFIG_DIR = os.path.expanduser("~/.llm-connections")
+DEFAULT_CONFIG_PATH = os.path.join(DEFAULT_CONFIG_DIR, "config.yaml")
+
+DEFAULT_CONFIG_TEMPLATE = """\
+llm-providers:
+  default:
+    provider: ollama
+    model: llama3.1:8b
+    num_ctx: 8192
+    temperature: 0.0
+"""
+
+
 class LLMConnection:
     """A configured LLM client backed by a specific provider.
 
     Usage:
-        # Load providers from a YAML file (only reads "providers:" key)
+        # Load from default global config (~/.llm-connections/config.yaml)
+        LLMConnection.load()
+
+        # Or load from a specific YAML file
+        LLMConnection.load("config/default.yaml")
+
+        # Both can be called — providers merge into one registry
+        LLMConnection.load()
         LLMConnection.load("config/default.yaml")
 
         # Get a named client
@@ -33,12 +53,27 @@ class LLMConnection:
         self._provider = provider
 
     @classmethod
-    def load(cls, yaml_path: str):
+    def load(cls, yaml_path: str = None):
         """Load provider configs from a YAML file and populate the registry.
 
-        Only reads the 'providers:' key. All other YAML keys are ignored.
-        Can be called multiple times — new providers are added, existing ones updated.
+        Args:
+            yaml_path: Path to YAML file. If None, reads from
+                       ~/.llm-connections/config.yaml
+
+        Only reads the 'llm-providers:' key. All other YAML keys are ignored.
+        Can be called multiple times — new providers merge into the registry.
         """
+        if yaml_path is None:
+            yaml_path = DEFAULT_CONFIG_PATH
+            if not os.path.isfile(yaml_path):
+                os.makedirs(DEFAULT_CONFIG_DIR, exist_ok=True)
+                with open(yaml_path, "w") as f:
+                    f.write(DEFAULT_CONFIG_TEMPLATE)
+                import logging
+                logging.warning(
+                    f"Created default LLM config at {yaml_path}. "
+                    f"Edit it to add your providers."
+                )
         yaml_path = os.path.expanduser(yaml_path)
         providers = load_providers(yaml_path)
 
@@ -55,10 +90,11 @@ class LLMConnection:
     def get(cls, name: str) -> "LLMConnection":
         """Get a named client from the registry."""
         if name not in cls._registry:
-            available = ", ".join(cls._registry.keys()) or "(none loaded)"
+            available = ", ".join(cls._registry.keys()) or "(none)"
             raise KeyError(
-                f"Provider '{name}' not found. Available: {available}. "
-                f"Call LLMConnection.load('config.yaml') first."
+                f"LLM provider '{name}' not found in config. "
+                f"Available providers: [{available}]. "
+                f"Add '{name}' to llm-providers in {DEFAULT_CONFIG_PATH}"
             )
         return cls._registry[name]
 
