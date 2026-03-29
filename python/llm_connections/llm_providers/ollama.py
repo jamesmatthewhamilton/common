@@ -54,9 +54,14 @@ class OllamaProvider(BaseProvider):
             close_tunnel(self._tunnel_port)
             self._tunnel_port = None
 
+    def _get_client(self):
+        """Get an Ollama client pointed at our base_url."""
+        import ollama
+        return ollama.Client(host=self.base_url)
+
     def chat(self, messages: list, tools: list = None,
              stream: bool = False, **overrides) -> LLMResponse:
-        import ollama
+        client = self._get_client()
 
         opts = self._merge_options(overrides)
         model = overrides.get("model", self.model)
@@ -87,9 +92,9 @@ class OllamaProvider(BaseProvider):
         for attempt in range(self.MAX_RETRIES):
             try:
                 if stream:
-                    return self._stream_chat(kwargs)
+                    return self._stream_chat(client, kwargs)
                 else:
-                    return self._sync_chat(kwargs)
+                    return self._sync_chat(client, kwargs)
             except Exception as e:
                 last_error = e
                 if attempt < self.MAX_RETRIES - 1:
@@ -100,11 +105,9 @@ class OllamaProvider(BaseProvider):
 
         raise ConnectionError(f"Ollama request failed after {self.MAX_RETRIES} attempts: {last_error}")
 
-    def _sync_chat(self, kwargs: dict) -> LLMResponse:
-        import ollama
-
+    def _sync_chat(self, client, kwargs: dict) -> LLMResponse:
         kwargs["stream"] = False
-        data = ollama.chat(**kwargs)
+        data = client.chat(**kwargs)
 
         text = data.message.content or ""
         tool_calls = []
@@ -145,9 +148,7 @@ class OllamaProvider(BaseProvider):
             model=kwargs["model"],
         )
 
-    def _stream_chat(self, kwargs: dict) -> LLMResponse:
-        import ollama
-
+    def _stream_chat(self, client, kwargs: dict) -> LLMResponse:
         kwargs["stream"] = True
         response = LLMResponse(model=kwargs["model"])
 
@@ -155,7 +156,7 @@ class OllamaProvider(BaseProvider):
             full_text = ""
             all_tool_calls = []
 
-            stream = ollama.chat(**kwargs)
+            stream = client.chat(**kwargs)
             for chunk in stream:
                 chunk_text = ""
                 chunk_tools = []
