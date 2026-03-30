@@ -168,6 +168,19 @@ class LitellmProvider(BaseProvider):
                         if finish:
                             response.done_reason = finish
 
+                        # Capture usage if present (sent in final chunk)
+                        usage = data.get("usage")
+                        if usage:
+                            response.prompt_tokens = usage.get("prompt_tokens", 0)
+                            response.completion_tokens = usage.get("completion_tokens", 0)
+
+            # If server didn't send usage, estimate from content
+            if not response.prompt_tokens:
+                # Estimate: count chars in all messages / 4
+                total_chars = sum(len(json.dumps(m)) for m in payload.get("messages", []))
+                response.prompt_tokens = total_chars // 4
+                response.completion_tokens = len(full_text) // 4
+
             # Finalize tool calls
             final_tools = []
             for idx in sorted(all_tool_calls.keys()):
