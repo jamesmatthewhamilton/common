@@ -79,64 +79,21 @@ class OllamaProvider(BaseProvider):
     def _setup_tunnel(self):
         """Establish SSH tunnel to remote Ollama server.
 
-        Discovers remote_host and remote_port by reading the Ollama endpoint
-        file on the remote server (same approach as ColombiAsk).
-        Config needs: user, host, remote_port.
-        remote_host is auto-discovered from the running Slurm job.
+        Config needs: user, host, remote_host, remote_port.
         """
-        import subprocess
-        from urllib.parse import urlparse
         from ..ssh import open_tunnel
 
         tc = self._tunnel_config
-        required = ["user", "host"]
+        required = ["user", "host", "remote_host", "remote_port"]
         missing = [k for k in required if k not in tc]
         if missing:
             raise ValueError(f"ssh_tunnel config missing: {', '.join(missing)}")
 
-        ssh_target = f"{tc['user']}@{tc['host']}"
-        remote_host = tc.get("remote_host")
-        remote_port = tc.get("remote_port")
-
-        # Auto-discover endpoint from Slurm job if not fully specified
-        if not remote_host or not remote_port:
-            logger.info("Discovering Ollama endpoint from PACE...")
-            try:
-                # Find running job ID
-                result = subprocess.run(
-                    ["ssh", ssh_target, "squeue -u $(whoami) -h -o '%i' | head -1"],
-                    capture_output=True, text=True, timeout=30,
-                )
-                job_id = result.stdout.strip()
-                if not job_id:
-                    raise ConnectionError("No running Slurm job found on PACE.")
-
-                # Read endpoint file
-                result = subprocess.run(
-                    ["ssh", ssh_target, f"cat ~/ollama-endpoint-{job_id}.txt 2>/dev/null"],
-                    capture_output=True, text=True, timeout=15,
-                )
-                for line in result.stdout.splitlines():
-                    line = line.strip()
-                    if line.startswith("http://"):
-                        parsed = urlparse(line)
-                        remote_host = parsed.hostname
-                        remote_port = parsed.port or remote_port
-                        logger.info(f"Discovered endpoint: {remote_host}:{remote_port}")
-                        break
-
-                if not remote_host or not remote_port:
-                    raise ConnectionError(
-                        f"Could not read endpoint from ~/ollama-endpoint-{job_id}.txt"
-                    )
-            except subprocess.TimeoutExpired:
-                raise ConnectionError("SSH to PACE timed out.")
-
         self._tunnel_port = open_tunnel(
             ssh_user=tc["user"],
             ssh_host=tc["host"],
-            remote_host=remote_host,
-            remote_port=remote_port,
+            remote_host=tc["remote_host"],
+            remote_port=tc["remote_port"],
             local_port=tc.get("local_port", 0),
             ssh_password=tc.get("password"),
             verify_url="/api/tags",
