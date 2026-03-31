@@ -28,11 +28,34 @@ class LitellmProvider(BaseProvider):
             headers["Authorization"] = f"Bearer {self.api_key}"
         return headers
 
+    def _convert_messages(self, messages: list) -> list:
+        """Convert messages to strict OpenAI format."""
+        converted = []
+        for msg in messages:
+            m = dict(msg)
+            # Stringify tool call arguments (OpenAI requires JSON strings, not dicts)
+            if "tool_calls" in m:
+                m["tool_calls"] = [
+                    {
+                        "id": tc.get("id", f"call_{i}"),
+                        "type": "function",
+                        "function": {
+                            "name": tc["function"]["name"],
+                            "arguments": json.dumps(tc["function"]["arguments"])
+                                if isinstance(tc["function"]["arguments"], dict)
+                                else tc["function"]["arguments"],
+                        },
+                    }
+                    for i, tc in enumerate(m["tool_calls"])
+                ]
+            converted.append(m)
+        return converted
+
     def _build_payload(self, messages: list, tools: list = None,
                        stream: bool = False, **opts) -> dict:
         payload = {
             "model": opts.pop("model", self.model),
-            "messages": messages,
+            "messages": self._convert_messages(messages),
             "stream": stream,
         }
         if tools:
