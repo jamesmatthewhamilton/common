@@ -77,8 +77,15 @@ class OllamaProvider(BaseProvider):
             self.base_url = config.get("base_url", "http://localhost:11434")
 
     def _setup_tunnel(self):
-        """Establish SSH tunnel to remote Ollama server."""
+        """Establish SSH tunnel to remote Ollama server.
+
+        Discovers remote_host and remote_port by reading the Ollama endpoint
+        file on the remote server (same approach as ColombiAsk).
+        Config needs: user, host, remote_port.
+        remote_host is auto-discovered from the running Slurm job.
+        """
         import subprocess
+        from urllib.parse import urlparse
         from ..ssh import open_tunnel
 
         tc = self._tunnel_config
@@ -87,33 +94,43 @@ class OllamaProvider(BaseProvider):
         if missing:
             raise ValueError(f"ssh_tunnel config missing: {', '.join(missing)}")
 
+        ssh_target = f"{tc['user']}@{tc['host']}"
         remote_host = tc.get("remote_host")
         remote_port = tc.get("remote_port")
 
-        # Auto-discover endpoint if discover_command is set
-        discover = tc.get("discover_command")
-        if discover and (not remote_host or not remote_port):
-            logger.info(f"Discovering endpoint via: {discover}")
+        # Auto-discover endpoint from Slurm job if not fully specified
+        if not remote_host or not remote_port:
+            logger.info("Discovering Ollama endpoint from PACE...")
             try:
+                # Find running job ID
                 result = subprocess.run(
-                    ["ssh", f"{tc['user']}@{tc['host']}", discover],
+                    ["ssh", ssh_target, "squeue -u $(whoami) -h -o '%i' | head -1"],
                     capture_output=True, text=True, timeout=30,
                 )
-                endpoint = result.stdout.strip().split("\n")[-1]
-                # Parse http://hostname:port
-                from urllib.parse import urlparse
-                parsed = urlparse(endpoint)
-                remote_host = parsed.hostname
-                remote_port = parsed.port
-                logger.info(f"Discovered endpoint: {remote_host}:{remote_port}")
-            except Exception as e:
-                raise ConnectionError(f"Endpoint discovery failed: {e}")
+                job_id = result.stdout.strip()
+                if not job_id:
+                    raise ConnectionError("No running Slurm job found on PACE.")
 
-        if not remote_host or not remote_port:
-            raise ValueError(
-                "ssh_tunnel needs either 'remote_host'+'remote_port' "
-                "or 'discover_command' in config"
-            )
+                # Read endpoint file
+                result = subprocess.run(
+                    ["ssh", ssh_target, f"cat ~/ollama-endpoint-{job_id}.txt 2>/dev/null"],
+                    capture_output=True, text=True, timeout=15,
+                )
+                for line in result.stdout.splitlines():
+                    line = line.strip()
+                    if line.startswith("http://"):
+                        parsed = urlparse(line)
+                        remote_host = parsed.hostname
+                        remote_port = parsed.port or remote_port
+                        logger.info(f"Discovered endpoint: {remote_host}:{remote_port}")
+                        break
+
+                if not remote_host or not remote_port:
+                    raise ConnectionError(
+                        f"Could not read endpoint from ~/ollama-endpoint-{job_id}.txt"
+                    )
+            except subprocess.TimeoutExpired:
+                raise ConnectionError("SSH to PACE timed out.")
 
         self._tunnel_port = open_tunnel(
             ssh_user=tc["user"],
@@ -123,7 +140,7 @@ class OllamaProvider(BaseProvider):
             local_port=tc.get("local_port", 0),
             ssh_password=tc.get("password"),
             verify_url="/api/tags",
-            verify_timeout=tc.get("verify_timeout", 15),
+            verify_timeout=tc.get("verify_timeout", 30),
         )
         self.base_url = f"http://localhost:{self._tunnel_port}"
         logger.info(f"Ollama tunneled to {self.base_url}")
