@@ -78,19 +78,48 @@ class OllamaProvider(BaseProvider):
 
     def _setup_tunnel(self):
         """Establish SSH tunnel to remote Ollama server."""
+        import subprocess
         from ..ssh import open_tunnel
 
         tc = self._tunnel_config
-        required = ["user", "host", "remote_host", "remote_port"]
+        required = ["user", "host"]
         missing = [k for k in required if k not in tc]
         if missing:
             raise ValueError(f"ssh_tunnel config missing: {', '.join(missing)}")
 
+        remote_host = tc.get("remote_host")
+        remote_port = tc.get("remote_port")
+
+        # Auto-discover endpoint if discover_command is set
+        discover = tc.get("discover_command")
+        if discover and (not remote_host or not remote_port):
+            logger.info(f"Discovering endpoint via: {discover}")
+            try:
+                result = subprocess.run(
+                    ["ssh", f"{tc['user']}@{tc['host']}", discover],
+                    capture_output=True, text=True, timeout=30,
+                )
+                endpoint = result.stdout.strip().split("\n")[-1]
+                # Parse http://hostname:port
+                from urllib.parse import urlparse
+                parsed = urlparse(endpoint)
+                remote_host = parsed.hostname
+                remote_port = parsed.port
+                logger.info(f"Discovered endpoint: {remote_host}:{remote_port}")
+            except Exception as e:
+                raise ConnectionError(f"Endpoint discovery failed: {e}")
+
+        if not remote_host or not remote_port:
+            raise ValueError(
+                "ssh_tunnel needs either 'remote_host'+'remote_port' "
+                "or 'discover_command' in config"
+            )
+
         self._tunnel_port = open_tunnel(
             ssh_user=tc["user"],
             ssh_host=tc["host"],
-            remote_host=tc["remote_host"],
-            remote_port=tc["remote_port"],
+            remote_host=remote_host,
+            remote_port=remote_port,
             local_port=tc.get("local_port", 0),
             ssh_password=tc.get("password"),
             verify_url="/api/tags",
