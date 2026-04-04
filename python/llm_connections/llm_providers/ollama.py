@@ -1,12 +1,64 @@
 """Ollama provider — local or remote LLM inference via Ollama."""
 
+import json
 import logging
+import re
 import time
 
 from .base import BaseProvider
 from ..response import LLMResponse, LLMChunk
 
 logger = logging.getLogger(__name__)
+
+
+def _fix_malformed_tool_json(raw: str) -> dict:
+    """Try to fix and parse malformed tool call JSON from a model.
+
+    Common issues:
+    - Stray "] after string values (model confuses JSON with array syntax)
+    - Raw newlines inside string values (should be \\n)
+
+    Returns a parsed tool call dict {name, arguments} or None if unfixable.
+    """
+    if not raw:
+        return None
+    try:
+        # Fix stray "] -> "
+        fixed = re.sub(r'"\](\s*[,}])', r'"\1', raw)
+        # Fix raw newlines inside JSON strings
+        result = []
+        in_string = False
+        escape = False
+        for ch in fixed:
+            if escape:
+                result.append(ch)
+                escape = False
+                continue
+            if ch == '\\':
+                escape = True
+                result.append(ch)
+                continue
+            if ch == '"':
+                in_string = not in_string
+                result.append(ch)
+                continue
+            if in_string and ch == '\n':
+                result.append('\\n')
+                continue
+            result.append(ch)
+        fixed = ''.join(result)
+
+        obj = json.loads(fixed)
+        # Could be {command: ..., timeout: ...} or {name: ..., arguments: ...}
+        if "name" in obj:
+            return {"name": obj["name"], "arguments": obj.get("arguments", {})}
+        elif "command" in obj:
+            return {"name": "bash_run", "arguments": obj}
+        elif "path" in obj:
+            return {"name": "file_read", "arguments": obj}
+        return None
+    except (json.JSONDecodeError, KeyError, TypeError):
+        return None
 
 
 class OllamaProvider(BaseProvider):
@@ -100,8 +152,21 @@ class OllamaProvider(BaseProvider):
                 # Malformed tool call JSON from model — not retryable, return as text
                 if "error parsing tool call" in err_str:
                     logger.warning(f"Model produced malformed tool call: {err_str}")
+                    import re
+                    raw_match = re.search(r"raw='(.+?)'", err_str, re.DOTALL)
+                    raw_text = raw_match.group(1) if raw_match else ""
+                    # Try to fix common JSON issues and parse the tool call
+                    fixed_json = _fix_malformed_tool_json(raw_text)
+                    if fixed_json:
+                        return LLMResponse(
+                            text="",
+                            tool_calls=[fixed_json],
+                            model=model,
+                            done_reason="stop",
+                        )
+                    # Fall back to returning raw text for text-based parser
                     return LLMResponse(
-                        text=f"[Tool call error: model produced invalid JSON. Try again.]",
+                        text=raw_text,
                         model=model,
                         done_reason="error",
                     )
@@ -165,26 +230,41 @@ class OllamaProvider(BaseProvider):
             full_text = ""
             all_tool_calls = []
 
-            stream = client.chat(**kwargs)
-            for chunk in stream:
-                chunk_text = ""
-                chunk_tools = []
+            try:
+                stream = client.chat(**kwargs)
+                for chunk in stream:
+                    chunk_text = ""
+                    chunk_tools = []
 
-                if chunk.message.content:
-                    chunk_text = chunk.message.content
-                    full_text += chunk_text
+                    if chunk.message.content:
+                        chunk_text = chunk.message.content
+                        full_text += chunk_text
 
-                if chunk.message.tool_calls:
-                    for tc in chunk.message.tool_calls:
-                        tc_dict = {
-                            "name": tc.function.name,
-                            "arguments": tc.function.arguments,
-                        }
-                        all_tool_calls.append(tc_dict)
-                        chunk_tools.append(tc_dict)
+                    if chunk.message.tool_calls:
+                        for tc in chunk.message.tool_calls:
+                            tc_dict = {
+                                "name": tc.function.name,
+                                "arguments": tc.function.arguments,
+                            }
+                            all_tool_calls.append(tc_dict)
+                            chunk_tools.append(tc_dict)
 
-                if chunk_text or chunk_tools:
-                    yield LLMChunk(text=chunk_text, tool_calls=chunk_tools)
+                    if chunk_text or chunk_tools:
+                        yield LLMChunk(text=chunk_text, tool_calls=chunk_tools)
+
+            except Exception as e:
+                err_str = str(e)
+                if "error parsing tool call" in err_str:
+                    raw_match = re.search(r"raw='(.+?)'", err_str, re.DOTALL)
+                    raw_text = raw_match.group(1) if raw_match else ""
+                    fixed_json = _fix_malformed_tool_json(raw_text)
+                    if fixed_json:
+                        response.tool_calls = [fixed_json]
+                        return
+                    response.text = raw_text
+                    response.done_reason = "error"
+                    return
+                raise
 
             # After stream completes, update the response object
             response.text = full_text
