@@ -25,13 +25,84 @@ DEFAULT_CONFIG_DIR = os.path.expanduser("~/.llm-connections")
 DEFAULT_CONFIG_PATH = os.path.join(DEFAULT_CONFIG_DIR, "config.yaml")
 
 DEFAULT_CONFIG_TEMPLATE = """\
+# llm-connections config — multi-provider LLM client + optional Slurm sessions.
+# Replace REPLACE_WITH_* placeholders below with your actual values.
+
 llm-providers:
-  default:
+  # Truly-local Ollama. Must be running at localhost:11434 (the default).
+  lmistral:
     provider: ollama
-    model: llama3.1:8b
+    model: mistral-nemo:latest
     num_ctx: 8192
     temperature: 0.0
+
+  # Slurm-spawned Ollama on a remote HPC. The 'slurm_session' field is resolved
+  # at startup by your caller (e.g. matthewcode._resolve_slurm_sessions): the
+  # caller spins up the Slurm job and rewrites this entry with base_url before
+  # LLMConnection.load() builds the provider.
+  default:
+    provider: ollama
+    model: gpt-oss:120b
+    num_ctx: 65536
+    temperature: 0.0
+    slurm_session: pace-gpt-oss-120b
+
+# Cluster + session definitions for the optional slurm-manipulator submodule.
+# Only used by SlurmSession.load(); LLMConnection.load() ignores this section.
+slurm-sessions:
+  clusters:
+    pace:
+      ssh:
+        user: REPLACE_WITH_USERNAME
+        host: REPLACE_WITH_HOST                       # e.g. login.your-hpc.example.edu
+      paths:
+        log_dir: ~/log
+        ollama_bin: REPLACE_WITH_OLLAMA_BIN_PATH      # e.g. /storage/.../bin/ollama
+        ollama_models_dir: REPLACE_WITH_OLLAMA_MODELS_PATH
+      endpoint:
+        file_pattern: "~/ollama-endpoint-${job_id}.txt"
+      readiness:
+        path: /api/tags
+        timeout: 30
+      bootstrap:
+        enabled: false   # auto-install Ollama (future)
+
+  sessions:
+    pace-gpt-oss-120b:
+      cluster: pace
+      model: gpt-oss:120b
+      sbatch: ~/.llm-connections/sbatch/ollama-generic.sbatch
+      sbatch_params:
+        job_name: ollama-gpt-oss-120b
+        account: REPLACE_WITH_SLURM_ACCOUNT           # e.g. gts-yourusername
+        partition: gpu-h200,gpu-rtxpro-blackwell,gpu-h100
+        constraint: "H200|H100|RTX-Pro-Blackwell"
+        gres: gpu:1
+        cpus: 8
+        mem: 96G
+        time: "01:30:00"
+        port: 11120
 """
+
+
+def _ensure_default_config(yaml_path: str = DEFAULT_CONFIG_PATH) -> None:
+    """Create yaml_path with the default template if it doesn't exist.
+
+    Used by both LLMConnection.load() and SlurmSession.load() so a fresh
+    install gets a working scaffold regardless of which entry point is hit
+    first. Has no effect if the file already exists (won't clobber user data).
+    """
+    yaml_path = os.path.expanduser(yaml_path)
+    if os.path.isfile(yaml_path):
+        return
+    os.makedirs(os.path.dirname(yaml_path), exist_ok=True)
+    with open(yaml_path, "w") as f:
+        f.write(DEFAULT_CONFIG_TEMPLATE)
+    import logging
+    logging.warning(
+        f"Created default config at {yaml_path}. "
+        f"Replace REPLACE_WITH_* placeholders before using Slurm sessions."
+    )
 
 
 class LLMConnection:
@@ -79,15 +150,7 @@ class LLMConnection:
         """
         if yaml_path is None:
             yaml_path = DEFAULT_CONFIG_PATH
-            if not os.path.isfile(yaml_path):
-                os.makedirs(DEFAULT_CONFIG_DIR, exist_ok=True)
-                with open(yaml_path, "w") as f:
-                    f.write(DEFAULT_CONFIG_TEMPLATE)
-                import logging
-                logging.warning(
-                    f"Created default LLM config at {yaml_path}. "
-                    f"Edit it to add your providers."
-                )
+            _ensure_default_config(yaml_path)
         yaml_path = os.path.expanduser(yaml_path)
         providers = load_providers(yaml_path)
 

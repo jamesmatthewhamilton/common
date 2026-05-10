@@ -146,6 +146,11 @@ class SlurmSession:
         if yaml_path is None:
             yaml_path = DEFAULT_CONFIG_PATH
 
+        # First-run: stub config (with both llm-providers: and slurm-sessions:
+        # placeholders) if missing.
+        from .client import _ensure_default_config
+        _ensure_default_config(yaml_path)
+
         # First-run: stub a sbatch copy if missing.
         user_sbatch = os.path.join(DEFAULT_SBATCH_DIR, "ollama-generic.sbatch")
         if not os.path.isfile(user_sbatch):
