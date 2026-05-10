@@ -2,13 +2,113 @@
 
 import json
 import logging
+import os
 import re
+import shutil
+import subprocess
+import sys
 import time
+import urllib.error
+import urllib.request
+from urllib.parse import urlparse
 
 from .base import BaseProvider
 from ..response import LLMResponse, LLMChunk
 
 logger = logging.getLogger(__name__)
+
+
+def _is_reachable(base_url: str, timeout: float = 2.0) -> bool:
+    """True if base_url + /api/tags responds with anything (even 4xx)."""
+    try:
+        with urllib.request.urlopen(base_url.rstrip("/") + "/api/tags",
+                                    timeout=timeout):
+            return True
+    except urllib.error.HTTPError:
+        return True
+    except (urllib.error.URLError, TimeoutError, ConnectionError, OSError):
+        return False
+
+
+def _is_localhost(base_url: str) -> bool:
+    host = urlparse(base_url).hostname or ""
+    return host in ("localhost", "127.0.0.1", "::1")
+
+
+def _start_local_ollama(base_url: str, wait: int = 10) -> None:
+    """Spawn `ollama serve` detached, listening on base_url's host:port.
+
+    Raises ConnectionError if ollama isn't installed or doesn't come up.
+    """
+    if not shutil.which("ollama"):
+        raise ConnectionError(
+            "'ollama' command not found. Install from https://ollama.com/download."
+        )
+
+    parsed = urlparse(base_url)
+    env = os.environ.copy()
+    env["OLLAMA_HOST"] = f"{parsed.hostname}:{parsed.port or 11434}"
+
+    subprocess.Popen(
+        ["ollama", "serve"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        env=env, start_new_session=True,
+    )
+
+    for _ in range(wait * 2):  # poll every 0.5s
+        if _is_reachable(base_url, timeout=1.0):
+            return
+        time.sleep(0.5)
+    raise ConnectionError(
+        f"Started 'ollama serve' (OLLAMA_HOST={env['OLLAMA_HOST']}) but "
+        f"it didn't become reachable at {base_url} within {wait}s."
+    )
+
+
+def kill_local_server() -> bool:
+    """pkill any local 'ollama serve' process.
+
+    Aggressive — terminates *every* matching process on the host, regardless
+    of who started it. Returns True if any were killed (pkill exit 0),
+    False if there was nothing to kill (pkill exit 1).
+    """
+    try:
+        result = subprocess.run(
+            ["pkill", "-f", "ollama serve"],
+            capture_output=True, text=True,
+        )
+    except FileNotFoundError:
+        # pkill missing — fall back to killall, then give up.
+        try:
+            result = subprocess.run(
+                ["killall", "ollama"], capture_output=True, text=True,
+            )
+        except FileNotFoundError:
+            logger.warning("Neither pkill nor killall found; cannot stop ollama serve.")
+            return False
+    return result.returncode == 0
+
+
+def _ensure_local_ollama_running(base_url: str) -> None:
+    """If Ollama at base_url isn't reachable, prompt the user (TTY only) to start it."""
+    if _is_reachable(base_url):
+        return
+
+    msg = f"Ollama is not running at {base_url}."
+    if not _is_localhost(base_url):
+        raise ConnectionError(
+            f"{msg} The endpoint isn't local, so 'ollama serve' won't help. "
+            f"Check the remote host or fix base_url in your config."
+        )
+    if not sys.stdin.isatty():
+        raise ConnectionError(f"{msg} Start it with: ollama serve")
+
+    print(f"\n{msg}", file=sys.stderr)
+    answer = input("Start it now? [Y/n]: ").strip().lower()
+    if answer not in ("", "y", "yes"):
+        raise ConnectionError("Ollama not running and user declined to start it.")
+    _start_local_ollama(base_url)
+    print(f"Ollama running at {base_url}.", file=sys.stderr)
 
 
 def _fix_malformed_tool_json(raw: str) -> dict:
@@ -75,6 +175,7 @@ class OllamaProvider(BaseProvider):
             self._setup_tunnel()
         else:
             self.base_url = config.get("base_url", "http://localhost:11434")
+            _ensure_local_ollama_running(self.base_url)
 
     def _setup_tunnel(self):
         """Establish SSH tunnel to remote Ollama server.
@@ -142,6 +243,11 @@ class OllamaProvider(BaseProvider):
         }
         if tools:
             kwargs["tools"] = tools
+        # Pin the model in VRAM. Without this, Ollama unloads idle models after
+        # 5 minutes (default) — and reloading a 60+GB model from a networked
+        # filesystem (e.g. PACE /storage/...) can take 30+ minutes. Users who
+        # want different behaviour can set 'keep_alive' in their provider config.
+        kwargs["keep_alive"] = opts.get("keep_alive", -1)
 
         last_error = None
         for attempt in range(self.MAX_RETRIES):
