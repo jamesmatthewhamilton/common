@@ -1,4 +1,4 @@
 [submodule "slurm-manipulator"]
 	path = slurm-manipulator
-	url = git@github.com:jamesmatthewhamilton/slurm-manipulator.git
+	url = https://github.com/jamesmatthewhamilton/slurm-manipulator.git
 	update = none
